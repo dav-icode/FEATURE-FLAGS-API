@@ -1,0 +1,120 @@
+// Feature Flags API — Prisma Schema
+// All timestamps are stored in UTC
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ──────────────────────────────────────────────
+// FEATURE FLAG
+// ──────────────────────────────────────────────
+
+model Flag {
+  id          String  @id @default(cuid())
+  key         String  @unique // e.g. "new-sap-integration", used in code
+  name        String
+  description String?
+
+  // Master switch — if false, always returns false regardless of rules
+  enabled Boolean @default(false)
+
+  rules     FlagRule[]
+  auditLogs AuditLog[]
+
+  createdBy String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([key])
+  @@index([enabled])
+}
+
+// ──────────────────────────────────────────────
+// FLAG RULE
+// Each rule represents ONE targeting condition.
+// Rules are evaluated in priority order (highest first).
+// First matching rule wins → flag is considered ENABLED for that context.
+// ──────────────────────────────────────────────
+
+model FlagRule {
+  id     String   @id @default(cuid())
+  flagId String
+  flag   Flag     @relation(fields: [flagId], references: [id], onDelete: Cascade)
+  type   RuleType
+
+  // Flexible JSON payload per rule type:
+  // USER_LIST  → { "userIds": ["u1", "u2", ...] }
+  // PERCENTAGE → { "percentage": 25 }           (0–100, deterministic hash)
+  // ENVIRONMENT→ { "environments": ["prod", "staging"] }
+  // SCHEDULE   → { "enableAt": "ISO", "disableAt": "ISO" }
+  value Json
+
+  // Higher priority rules are evaluated first
+  priority Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@index([flagId, priority])
+}
+
+enum RuleType {
+  USER_LIST
+  PERCENTAGE
+  ENVIRONMENT
+  SCHEDULE
+}
+
+// ──────────────────────────────────────────────
+// AUDIT LOG — immutable record of every change
+// ──────────────────────────────────────────────
+
+model AuditLog {
+  id     String @id @default(cuid())
+  flagId String
+  flag   Flag   @relation(fields: [flagId], references: [id], onDelete: Cascade)
+
+  action      AuditAction
+  before      Json? // State before the change
+  after       Json? // State after the change
+  performedBy String // API key name or user identifier
+
+  createdAt DateTime @default(now())
+
+  @@index([flagId, createdAt])
+  @@index([performedBy])
+}
+
+enum AuditAction {
+  FLAG_CREATED
+  FLAG_UPDATED
+  FLAG_DELETED
+  FLAG_TOGGLED
+  RULE_ADDED
+  RULE_REMOVED
+}
+
+// ──────────────────────────────────────────────
+// API KEY — scoped authentication
+// The raw key is shown ONCE at creation; only the hash is stored.
+// ──────────────────────────────────────────────
+
+model ApiKey {
+  id          String    @id @default(cuid())
+  name        String // Human-readable label
+  keyHash     String    @unique // bcrypt hash of the full key
+  keyPrefix   String    @db.VarChar(8) // First 8 chars for fast lookup
+  permissions String[] // e.g. ["flags:read", "flags:write", "evaluate"]
+  enabled     Boolean   @default(true)
+  lastUsedAt  DateTime?
+  expiresAt   DateTime? // null = never expires
+  createdBy   String
+  createdAt   DateTime  @default(now())
+
+  @@index([keyPrefix])
+  @@index([enabled])
+}
